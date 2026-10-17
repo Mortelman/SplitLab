@@ -1,0 +1,163 @@
+specification {
+  element actor { style { shape person; color gray } }
+  element system { style { color primary } }
+  element client { style { shape browser; color primary } }
+  element page { style { shape browser; color muted } }
+  element script { style { shape component; color amber } }
+  element service { style { color green } }
+  element component { style { shape component; color green } }
+  element database { style { shape cylinder; color indigo } }
+  element gateway { style { color muted } }
+}
+
+model {
+  author = actor 'Автор теста' {
+    description 'Маркетолог или продакт.'
+  }
+  visitor = actor 'Посетитель' {
+    description 'Пользуется сайтом без расширения.'
+  }
+  landing = page 'Лендинг клиента' {
+    description 'Статическая страница с целевой кнопкой.'
+  }
+
+  splitlab = system 'SplitLab' {
+    extension = client 'Расширение Chrome' {
+      technology 'TypeScript · Manifest V3'
+      description 'Выбор кнопки, предпросмотр, настройка теста.'
+      metadata { owner 'Тимур' }
+    }
+
+    web = client 'Веб-отчёт' {
+      technology 'React · TypeScript'
+      description 'Результаты A/B, прогресс и статус.'
+      metadata { owner 'Степан' }
+    }
+
+    sdk = script 'Скрипт SplitLab' {
+      technology 'TypeScript'
+      description 'Применение варианта и сбор кликов.'
+      metadata {
+        owner 'Тимур'
+        integration 'Разработчик клиента однократно подключает скрипт к сайту.'
+        behavior 'Стабильный ID профиля, без учёта preview; при отказе — исходная кнопка.'
+      }
+    }
+
+    edge = gateway 'Вход HTTPS' {
+      technology 'Caddy'
+      description 'Статика и единая точка входа в API.'
+      metadata { owner 'Степан' }
+    }
+
+    api = service 'Сервер приложения' {
+      technology 'Python · FastAPI'
+      description 'Эксперименты, события, расчёты и отчёты.'
+      metadata {
+        owner 'Степан'
+        structure 'Один модульный монолит; фоновые задачи работают в этом же приложении.'
+      }
+
+      access = component 'Доступ' {
+        description 'Вход и проверка владельца проекта.'
+      }
+
+      experiments = component 'Эксперименты' {
+        description 'Настройки, план выборки, запуск и завершение.'
+        metadata {
+          background 'Серверная задача проверяет сроки и фиксирует итоговый отчёт.'
+          rules 'План неизменяем после запуска; один одновременно набирающий тест автора.'
+        }
+      }
+
+      runtime = component 'Работа с посетителями' {
+        description 'Конфигурация A/B, приём событий и диагностика.'
+        metadata {
+          events 'Участия и клики; повторная доставка учитывается один раз. Диагностика отдельно от статистики.'
+          assignment 'Стабильный случайный A/B 50/50 для experiment_id + visitor_id.'
+          persistence 'Подтверждение события только после сохранения транзакции.'
+        }
+      }
+
+      statistics = component 'Расчёты' {
+        technology 'Python · statsmodels · SciPy'
+        description 'Выборка, конверсии и доверительный интервал.'
+        metadata {
+          quality 'Проверка распределения групп после финализации; нет автоматического победителя по промежуточным данным.'
+        }
+      }
+
+      reports = component 'Отчёты' {
+        description 'Подготовка результата и статуса для автора.'
+      }
+
+      experiments -> access 'Права автора'
+      experiments -> statistics 'План и итог'
+      reports -> access 'Права автора'
+      reports -> statistics 'Показатели'
+    }
+
+    db = database 'База данных' {
+      technology 'PostgreSQL'
+      description 'Проекты, тесты, события и результаты.'
+      metadata {
+        owner 'Степан'
+        persistence 'Единое постоянное хранилище; уникальность событий и участия, состояние и сроки эксперимента.'
+      }
+    }
+  }
+
+  author -> splitlab.extension 'Настройка теста'
+  author -> splitlab.web 'Чтение результата'
+  visitor -> landing 'Открывает страницу'
+  landing -> splitlab.sdk 'Подключённый SDK'
+  splitlab.extension -> splitlab.edge 'Управление'
+  splitlab.web -> splitlab.edge 'Отчёт'
+  splitlab.sdk -> splitlab.edge 'Конфигурация и события'
+
+  splitlab.edge -> splitlab.api.experiments 'Управление тестами'
+  splitlab.edge -> splitlab.api.access 'Вход автора'
+  splitlab.edge -> splitlab.api.runtime 'Запросы SDK'
+  splitlab.edge -> splitlab.api.reports 'Запрос отчёта'
+
+  splitlab.api.access -> splitlab.db 'Сессии и владельцы'
+  splitlab.api.experiments -> splitlab.db 'План и состояние'
+  splitlab.api.runtime -> splitlab.db 'Назначения и события'
+  splitlab.api.reports -> splitlab.db 'Данные отчёта'
+}
+
+views {
+  view index of splitlab {
+    title '01 · Архитектура SplitLab'
+    description 'Два браузерных сценария используют один сервер и одну БД. Скрипт один раз подключается к лендингу; посетителям расширение не требуется.'
+
+    include author, visitor
+
+    group 'Браузер автора' {
+      include splitlab.extension, splitlab.web
+    }
+    group 'Браузер посетителя' {
+      include landing, splitlab.sdk
+    }
+    group 'Сервер SplitLab' {
+      include splitlab.edge, splitlab.api, splitlab.db
+    }
+
+    include splitlab.edge -> splitlab.api with { title 'REST / JSON' }
+    include splitlab.api -> splitlab.db with { title 'SQL' }
+
+    autoLayout LeftRight
+  }
+
+  view backend of splitlab.api {
+    title '02 · Устройство сервера'
+    description 'Пять модулей внутри одного FastAPI-приложения. Авторские операции проверяют владельца; запросы SDK не дают доступа к управлению и отчётам.'
+
+    group 'Одно приложение FastAPI' {
+      include splitlab.api.*
+    }
+    include splitlab.db
+
+    autoLayout TopBottom
+  }
+}
